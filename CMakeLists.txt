@@ -15,5 +15,18 @@ else()
     target_compile_options(medsync_warnings INTERFACE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(medsync_core
+    src/DeviceState.cpp
+)
+target_include_directories(medsync_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(medsync_core PUBLIC cxx_std_17)
+target_link_libraries(medsync_core PRIVATE medsync_warnings)
+
 add_executable(medsync src/main.cpp)
-target_link_libraries(medsync PRIVATE medsync_warnings)
+target_link_libraries(medsync PRIVATE medsync_core medsync_warnings)
+
+option(MEDSYNC_BUILD_TESTS "Build MedSync unit tests" ON)
+if(MEDSYNC_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
