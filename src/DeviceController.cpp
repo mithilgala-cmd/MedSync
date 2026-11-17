@@ -20,6 +20,11 @@ bool DeviceController::initialise(std::string& error) {
         error = "device is already initialised";
         return false;
     }
+    if (state_ != DeviceState::Idle) {
+        error = "device cannot be initialised from state " +
+                std::string(to_string(state_));
+        return false;
+    }
     if (!config_.validate(error)) {
         return false;
     }

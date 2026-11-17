@@ -62,6 +62,18 @@ TEST_F(DeviceControllerTest, InitialiseIsIdempotentOnlyOnce) {
     EXPECT_NE(error.find("already"), std::string::npos);
 }
 
+TEST_F(DeviceControllerTest, CannotInitialiseAfterShutdown) {
+    Config config;
+    std::ostringstream sink;
+    Logger logger(sink);
+    DeviceController controller(config, logger);
+
+    std::string error;
+    ASSERT_TRUE(controller.shutdown(error)) << error;
+    EXPECT_FALSE(controller.initialise(error));
+    EXPECT_NE(error.find("ShuttingDown"), std::string::npos);
+}
+
 TEST_F(DeviceControllerTest, HomeMovesFromIdleToReady) {
     EXPECT_EQ(controller_.state(), DeviceState::Idle);
 
