@@ -14,6 +14,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(medsync_tests
     test_config.cpp
+    test_device_controller.cpp
     test_device_state.cpp
     test_logger.cpp
     test_positioning.cpp

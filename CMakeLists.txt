@@ -17,6 +17,7 @@ endif()
 
 add_library(medsync_core
     src/Config.cpp
+    src/DeviceController.cpp
     src/DeviceState.cpp
     src/Logger.cpp
     src/PositioningController.cpp
