@@ -5,6 +5,7 @@
 #include <chrono>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include "medsync/BoundedQueue.hpp"
 #include "medsync/DeviceEvent.hpp"
@@ -15,7 +16,11 @@ namespace {
 
 class PositioningControllerTest : public ::testing::Test {
 protected:
-    Config config_;
+    Config config_ = [] {
+        Config config;
+        config.stepDelay = std::chrono::milliseconds(0);
+        return config;
+    }();
     std::ostringstream sink_;
     Logger logger_{sink_};
     PositioningController stage_{config_, logger_};
@@ -86,6 +91,7 @@ TEST_F(PositioningControllerTest, HomingReturnsStageToHomePosition) {
 
 TEST(PositioningWorkerTest, ReportsMoveCompletion) {
     Config config;
+    config.stepDelay = std::chrono::milliseconds(0);
     std::ostringstream sink;
     Logger logger(sink);
     BoundedQueue<DeviceEvent> events(8);
@@ -131,6 +137,33 @@ TEST(PositioningWorkerTest, ShutdownIsIdempotent) {
     stage.shutdown();
 
     SUCCEED();
+}
+
+TEST(PositioningWorkerTest, CancelInterruptsTheStepDelay) {
+    Config config;
+    config.stepDelay = std::chrono::milliseconds(20);
+    std::ostringstream sink;
+    Logger logger(sink);
+    BoundedQueue<DeviceEvent> events(8);
+    PositioningController stage(config, logger);
+
+    stage.start(events);
+    std::string error;
+    ASSERT_TRUE(stage.home(error)) << error;
+    ASSERT_TRUE(stage.submitMove(Position{100, 100}, 11, error)) << error;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    stage.cancelPending();
+
+    DeviceEvent event;
+    ASSERT_TRUE(events.popFor(event, std::chrono::milliseconds(2000)));
+    EXPECT_TRUE(event.type == DeviceEventType::MoveFailed ||
+                event.type == DeviceEventType::MoveAborted);
+    EXPECT_EQ(event.cycleId, 11u);
+    EXPECT_NE(stage.position(), (Position{100, 100}));
+    EXPECT_TRUE(stage.waitUntilIdle(std::chrono::milliseconds(1000)));
+
+    stage.shutdown();
 }
 
 } // namespace

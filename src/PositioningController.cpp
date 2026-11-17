@@ -26,8 +26,12 @@ void PositioningController::start(BoundedQueue<DeviceEvent>& events) {
 }
 
 void PositioningController::shutdown() {
-    abort_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(delayMutex_);
+        abort_.store(true, std::memory_order_release);
+    }
     jobs_.close();
+    delayCv_.notify_all();
     if (worker_.joinable()) {
         worker_.join();
     }
@@ -130,7 +134,12 @@ void PositioningController::invalidateHoming() {
 }
 
 void PositioningController::cancelPending() {
-    abort_.store(true, std::memory_order_release);
+    {
+        // Setting the flag under delayMutex_ closes the predicate-check/sleep
+        // window in waitForStepDelay().
+        std::lock_guard<std::mutex> lock(delayMutex_);
+        abort_.store(true, std::memory_order_release);
+    }
     {
         // Increment under positionMutex_ so a step cannot pass the generation
         // check and then write a coordinate after cancellation.
@@ -138,9 +147,11 @@ void PositioningController::cancelPending() {
         generation_.fetch_add(1, std::memory_order_acq_rel);
     }
     jobs_.clear();
+    delayCv_.notify_all();
 }
 
 void PositioningController::clearAbort() {
+    std::lock_guard<std::mutex> lock(delayMutex_);
     abort_.store(false, std::memory_order_release);
 }
 
@@ -201,7 +212,19 @@ bool PositioningController::moveAxis(int target, char axisName,
         }
         logger_.debug(std::string("axis ") + axisName + " -> " +
                       std::to_string(next));
+        waitForStepDelay();
     }
+}
+
+void PositioningController::waitForStepDelay() {
+    if (config_.stepDelay.count() <= 0) {
+        return;
+    }
+
+    std::unique_lock<std::mutex> lock(delayMutex_);
+    (void)delayCv_.wait_for(lock, config_.stepDelay, [this] {
+        return abort_.load(std::memory_order_acquire);
+    });
 }
 
 void PositioningController::publish(DeviceEventType type,

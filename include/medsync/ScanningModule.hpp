@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "medsync/BoundedQueue.hpp"
+#include "medsync/Config.hpp"
 #include "medsync/DeviceEvent.hpp"
 #include "medsync/Types.hpp"
 
@@ -20,7 +21,7 @@ class Logger;
 // the controller's supervisor decides what that means for device state.
 class ScanningModule {
 public:
-    explicit ScanningModule(Logger& logger);
+    ScanningModule(const Config& config, Logger& logger);
     ~ScanningModule();
 
     ScanningModule(const ScanningModule&) = delete;
@@ -47,16 +48,23 @@ private:
     };
 
     void run();
+    void waitForScanDuration();
     void publish(DeviceEventType type, std::uint64_t cycleId,
                  const ScanResult& result, const std::string& message);
     void setBusy(bool busy);
 
+    Config config_;
     Logger& logger_;
     BoundedQueue<ScanJob> jobs_{4};
     BoundedQueue<DeviceEvent>* events_{nullptr};
     std::thread worker_;
     std::atomic<bool> abort_{false};
     std::atomic<std::uint64_t> generation_{0};
+
+    // Same lost-wake protection as PositioningController: abort_ is set under
+    // delayMutex_ before the condition variable is notified.
+    std::mutex delayMutex_;
+    std::condition_variable delayCv_;
 
     std::mutex idleMutex_;
     std::condition_variable idleCv_;

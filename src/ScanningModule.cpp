@@ -24,7 +24,8 @@ std::uint32_t fnv1a(std::string_view text) noexcept {
 
 } // namespace
 
-ScanningModule::ScanningModule(Logger& logger) : logger_(logger) {}
+ScanningModule::ScanningModule(const Config& config, Logger& logger)
+    : config_(config), logger_(logger) {}
 
 ScanningModule::~ScanningModule() {
     shutdown();
@@ -39,8 +40,12 @@ void ScanningModule::start(BoundedQueue<DeviceEvent>& events) {
 }
 
 void ScanningModule::shutdown() {
-    abort_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(delayMutex_);
+        abort_.store(true, std::memory_order_release);
+    }
     jobs_.close();
+    delayCv_.notify_all();
     if (worker_.joinable()) {
         worker_.join();
     }
@@ -89,44 +94,71 @@ ScanResult ScanningModule::scan(const Sample& sample) {
 }
 
 void ScanningModule::cancelPending() {
-    abort_.store(true, std::memory_order_release);
+    {
+        // Setting the flag under delayMutex_ closes the predicate-check/sleep
+        // window in waitForScanDuration().
+        std::lock_guard<std::mutex> lock(delayMutex_);
+        abort_.store(true, std::memory_order_release);
+    }
     // Invalidate jobs that a worker may already have popped but not started.
     // Without this, reset() could clear abort_ and let such a job run.
     generation_.fetch_add(1, std::memory_order_acq_rel);
     jobs_.clear();
+    delayCv_.notify_all();
 }
 
 void ScanningModule::clearAbort() {
+    std::lock_guard<std::mutex> lock(delayMutex_);
     abort_.store(false, std::memory_order_release);
 }
 
 void ScanningModule::run() {
+    const auto cancelled = [this](const ScanJob& job) {
+        return abort_.load(std::memory_order_acquire) ||
+               job.generation != generation_.load(std::memory_order_acquire);
+    };
+
     ScanJob job;
     while (jobs_.pop(job)) {
         setBusy(true);
 
-        if (abort_.load(std::memory_order_acquire) ||
-            job.generation != generation_.load(std::memory_order_acquire)) {
-            ScanResult aborted;
-            aborted.sampleId = job.sample.id;
-            aborted.successful = false;
-            aborted.note = "scan aborted";
-            publish(DeviceEventType::ScanFailed, job.cycleId, aborted,
-                    aborted.note);
-            setBusy(false);
-            continue;
+        bool aborted = cancelled(job);
+        if (!aborted) {
+            waitForScanDuration();
+            aborted = cancelled(job);
         }
 
-        const ScanResult result = scan(job.sample);
-        if (result.successful) {
-            publish(DeviceEventType::ScanCompleted, job.cycleId, result, "");
-        } else {
+        if (aborted) {
+            ScanResult result;
+            result.sampleId = job.sample.id;
+            result.successful = false;
+            result.note = "scan aborted";
             publish(DeviceEventType::ScanFailed, job.cycleId, result,
                     result.note);
+        } else {
+            const ScanResult result = scan(job.sample);
+            if (result.successful) {
+                publish(DeviceEventType::ScanCompleted, job.cycleId, result,
+                        "");
+            } else {
+                publish(DeviceEventType::ScanFailed, job.cycleId, result,
+                        result.note);
+            }
         }
 
         setBusy(false);
     }
+}
+
+void ScanningModule::waitForScanDuration() {
+    if (config_.scanDuration.count() <= 0) {
+        return;
+    }
+
+    std::unique_lock<std::mutex> lock(delayMutex_);
+    (void)delayCv_.wait_for(lock, config_.scanDuration, [this] {
+        return abort_.load(std::memory_order_acquire);
+    });
 }
 
 void ScanningModule::publish(DeviceEventType type, std::uint64_t cycleId,

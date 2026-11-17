@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 
 namespace medsync {
@@ -51,6 +52,25 @@ TEST(ConfigTest, RejectsInvalidSampleIdLimits) {
 
     config.maxSampleIdLength = 129;
     error.clear();
+    EXPECT_FALSE(config.validate(error));
+}
+
+TEST(ConfigTest, RejectsNegativeDurations) {
+    Config config;
+    config.stepDelay = std::chrono::milliseconds(-1);
+    std::string error;
+    EXPECT_FALSE(config.validate(error));
+
+    config.stepDelay = std::chrono::milliseconds(0);
+    config.scanDuration = std::chrono::milliseconds(-1);
+    error.clear();
+    EXPECT_FALSE(config.validate(error));
+}
+
+TEST(ConfigTest, RejectsNonPositiveSensorPeriod) {
+    Config config;
+    config.sensorPeriod = std::chrono::milliseconds(0);
+    std::string error;
     EXPECT_FALSE(config.validate(error));
 }
 
