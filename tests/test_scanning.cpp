@@ -2,9 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <sstream>
 #include <string>
 
+#include "medsync/BoundedQueue.hpp"
+#include "medsync/DeviceEvent.hpp"
 #include "medsync/Logger.hpp"
 
 namespace medsync {
@@ -45,6 +48,39 @@ TEST_F(ScanningModuleTest, RejectsEmptySampleId) {
 
     EXPECT_FALSE(result.successful);
     EXPECT_EQ(result.qualityScore, 0);
+}
+
+TEST(ScanningWorkerTest, ReportsScanCompletion) {
+    std::ostringstream sink;
+    Logger logger(sink);
+    BoundedQueue<DeviceEvent> events(8);
+    ScanningModule scanner(logger);
+
+    scanner.start(events);
+    const Sample sample{"S-101", Position{10, 20}, SampleStatus::Positioned};
+    std::string error;
+    ASSERT_TRUE(scanner.submitScan(sample, 42, error)) << error;
+
+    DeviceEvent event;
+    ASSERT_TRUE(events.popFor(event, std::chrono::milliseconds(2000)));
+    EXPECT_EQ(event.type, DeviceEventType::ScanCompleted);
+    EXPECT_EQ(event.cycleId, 42u);
+    EXPECT_TRUE(event.scan.successful);
+    EXPECT_EQ(event.scan.sampleId, "S-101");
+
+    scanner.shutdown();
+    EXPECT_TRUE(scanner.waitUntilIdle(std::chrono::milliseconds(100)));
+}
+
+TEST(ScanningWorkerTest, RejectsSubmissionWithoutWorker) {
+    std::ostringstream sink;
+    Logger logger(sink);
+    ScanningModule scanner(logger);
+    const Sample sample{"S-101", Position{0, 0}, SampleStatus::Received};
+
+    std::string error;
+    EXPECT_FALSE(scanner.submitScan(sample, 1, error));
+    EXPECT_NE(error.find("not running"), std::string::npos);
 }
 
 } // namespace

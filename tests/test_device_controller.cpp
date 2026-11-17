@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <sstream>
 #include <string>
 
@@ -9,6 +10,8 @@
 
 namespace medsync {
 namespace {
+
+using namespace std::chrono_literals;
 
 class DeviceControllerTest : public ::testing::Test {
 protected:
@@ -21,6 +24,14 @@ protected:
         std::string error;
         ASSERT_TRUE(controller_.home(error)) << error;
         ASSERT_EQ(controller_.state(), DeviceState::Ready);
+    }
+
+    void runAndWait(const std::string& id, const Position& target) {
+        std::string error;
+        ASSERT_TRUE(controller_.loadSample(id, target, error)) << error;
+        ASSERT_TRUE(controller_.runCycle(error)) << error;
+        ASSERT_TRUE(controller_.waitForCycleCompletion(2000ms))
+            << "cycle did not complete";
     }
 
     Config config_;
@@ -79,8 +90,8 @@ TEST_F(DeviceControllerTest, HomeMovesFromIdleToReady) {
 
     homeDevice();
 
-    EXPECT_TRUE(controller_.positioning().isHomed());
-    EXPECT_EQ(controller_.positioning().position(), config_.homePosition);
+    EXPECT_TRUE(controller_.isHomed());
+    EXPECT_EQ(controller_.position(), config_.homePosition);
 }
 
 TEST_F(DeviceControllerTest, HappyPathCompletesSampleAndReturnsToReady) {
@@ -89,15 +100,30 @@ TEST_F(DeviceControllerTest, HappyPathCompletesSampleAndReturnsToReady) {
     std::string error;
     ASSERT_TRUE(controller_.loadSample("S-001", Position{20, 30}, error))
         << error;
-    EXPECT_TRUE(controller_.samples().hasActive());
-    EXPECT_EQ(controller_.samples().active()->status, SampleStatus::Received);
+    EXPECT_TRUE(controller_.hasActiveSample());
+    ASSERT_TRUE(controller_.activeSample().has_value());
+    EXPECT_EQ(controller_.activeSample()->status, SampleStatus::Received);
 
     ASSERT_TRUE(controller_.runCycle(error)) << error;
+    ASSERT_TRUE(controller_.waitForCycleCompletion(2000ms));
 
     EXPECT_EQ(controller_.state(), DeviceState::Ready);
-    EXPECT_FALSE(controller_.samples().hasActive());
-    EXPECT_EQ(controller_.positioning().position(), (Position{20, 30}));
+    EXPECT_FALSE(controller_.hasActiveSample());
+    EXPECT_EQ(controller_.position(), (Position{20, 30}));
     EXPECT_NE(sink_.str().find("sample 'S-001' completed"), std::string::npos);
+}
+
+TEST_F(DeviceControllerTest, SequentialCyclesReuseTheWorkers) {
+    homeDevice();
+
+    for (int i = 0; i < 5; ++i) {
+        const std::string id = "S-00" + std::to_string(i);
+        const Position target{10 + i, 20 + i};
+        runAndWait(id, target);
+        EXPECT_EQ(controller_.state(), DeviceState::Ready);
+        EXPECT_EQ(controller_.position(), target);
+        EXPECT_FALSE(controller_.hasActiveSample());
+    }
 }
 
 TEST_F(DeviceControllerTest, RejectsSecondSampleWhileOneIsLoaded) {
@@ -136,8 +162,8 @@ TEST_F(DeviceControllerTest, EmergencyStopLatchesAndFailsActiveSample) {
 
     ASSERT_TRUE(controller_.emergencyStop(error)) << error;
     EXPECT_EQ(controller_.state(), DeviceState::EmergencyStop);
-    EXPECT_FALSE(controller_.samples().hasActive());
-    EXPECT_FALSE(controller_.positioning().isHomed());
+    EXPECT_FALSE(controller_.hasActiveSample());
+    EXPECT_FALSE(controller_.isHomed());
     EXPECT_NE(sink_.str().find("failed: emergency stop"), std::string::npos);
 }
 
@@ -163,7 +189,7 @@ TEST_F(DeviceControllerTest, ResetRequiresEmergencyStopToBeReleased) {
     ASSERT_TRUE(controller_.reset(error)) << error;
 
     EXPECT_EQ(controller_.state(), DeviceState::Idle);
-    EXPECT_FALSE(controller_.positioning().isHomed());
+    EXPECT_FALSE(controller_.isHomed());
 }
 
 TEST_F(DeviceControllerTest, ResetIsRejectedOutsideSafetyStates) {
@@ -192,7 +218,7 @@ TEST_F(DeviceControllerTest, CanHomeAgainAfterReset) {
     ASSERT_TRUE(controller_.home(error)) << error;
 
     EXPECT_EQ(controller_.state(), DeviceState::Ready);
-    EXPECT_TRUE(controller_.positioning().isHomed());
+    EXPECT_TRUE(controller_.isHomed());
 }
 
 TEST_F(DeviceControllerTest, ShutdownIsIdempotentAndTerminal) {
@@ -216,6 +242,13 @@ TEST_F(DeviceControllerTest, StatusTextIncludesStateAndSample) {
     EXPECT_NE(status.find("state=Ready"), std::string::npos);
     EXPECT_NE(status.find("S-777"), std::string::npos);
     EXPECT_NE(status.find("Received"), std::string::npos);
+}
+
+TEST_F(DeviceControllerTest, WaitForStateTimesOutWhenStateNeverArrives) {
+    homeDevice();
+
+    EXPECT_FALSE(controller_.waitForState(DeviceState::Scanning,
+                                          std::chrono::milliseconds(20)));
 }
 
 } // namespace

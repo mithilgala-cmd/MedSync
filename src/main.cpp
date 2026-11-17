@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -26,7 +27,8 @@ void printHelp() {
         << "Commands:\n"
         << "  home                 Home the stage (Idle -> Ready)\n"
         << "  load <id> <x> <y>    Load a sample at a target position\n"
-        << "  run                  Position, scan, and complete the sample\n"
+        << "  run                  Start positioning and scanning the loaded sample\n"
+        << "  wait                 Wait up to 5 s for the current cycle to finish\n"
         << "  status               Show device state, position, and sample\n"
         << "  estop                Latch an emergency stop (always accepted)\n"
         << "  release              Clear the emergency stop cause\n"
@@ -110,8 +112,16 @@ int main() {
                 printError(error);
             }
         } else if (command == "run") {
-            if (!controller.runCycle(error)) {
+            if (controller.runCycle(error)) {
+                std::cout << "cycle started\n";
+            } else {
                 printError(error);
+            }
+        } else if (command == "wait") {
+            if (controller.waitForCycleCompletion(std::chrono::milliseconds(5000))) {
+                std::cout << "cycle complete\n";
+            } else {
+                printError("cycle did not complete within 5 s");
             }
         } else if (command == "status") {
             std::cout << controller.statusText() << '\n';

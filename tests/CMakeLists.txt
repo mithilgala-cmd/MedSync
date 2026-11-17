@@ -14,6 +14,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(medsync_tests
     test_bounded_queue.cpp
+    test_concurrency.cpp
     test_config.cpp
     test_device_controller.cpp
     test_device_state.cpp
@@ -25,4 +26,4 @@ add_executable(medsync_tests
 target_link_libraries(medsync_tests PRIVATE medsync_core GTest::gtest_main medsync_warnings)
 
 include(GoogleTest)
-gtest_discover_tests(medsync_tests)
+gtest_discover_tests(medsync_tests PROPERTIES TIMEOUT 30)

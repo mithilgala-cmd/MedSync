@@ -2,9 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <sstream>
 #include <string>
 
+#include "medsync/BoundedQueue.hpp"
+#include "medsync/DeviceEvent.hpp"
 #include "medsync/Logger.hpp"
 
 namespace medsync {
@@ -79,6 +82,55 @@ TEST_F(PositioningControllerTest, HomingReturnsStageToHomePosition) {
     ASSERT_TRUE(stage_.home(error)) << error;
 
     EXPECT_EQ(stage_.position(), config_.homePosition);
+}
+
+TEST(PositioningWorkerTest, ReportsMoveCompletion) {
+    Config config;
+    std::ostringstream sink;
+    Logger logger(sink);
+    BoundedQueue<DeviceEvent> events(8);
+    PositioningController stage(config, logger);
+
+    stage.start(events);
+    std::string error;
+    ASSERT_TRUE(stage.home(error)) << error;
+    ASSERT_TRUE(stage.submitMove(Position{20, 30}, 7, error)) << error;
+
+    DeviceEvent event;
+    ASSERT_TRUE(events.popFor(event, std::chrono::milliseconds(2000)));
+    EXPECT_EQ(event.type, DeviceEventType::MoveCompleted);
+    EXPECT_EQ(event.cycleId, 7u);
+    EXPECT_EQ(stage.position(), (Position{20, 30}));
+
+    stage.shutdown();
+    EXPECT_TRUE(stage.waitUntilIdle(std::chrono::milliseconds(100)));
+}
+
+TEST(PositioningWorkerTest, RejectsSubmissionWithoutWorker) {
+    Config config;
+    std::ostringstream sink;
+    Logger logger(sink);
+    PositioningController stage(config, logger);
+
+    std::string error;
+    ASSERT_TRUE(stage.home(error)) << error;
+
+    EXPECT_FALSE(stage.submitMove(Position{10, 10}, 1, error));
+    EXPECT_NE(error.find("not running"), std::string::npos);
+}
+
+TEST(PositioningWorkerTest, ShutdownIsIdempotent) {
+    Config config;
+    std::ostringstream sink;
+    Logger logger(sink);
+    BoundedQueue<DeviceEvent> events(8);
+    PositioningController stage(config, logger);
+
+    stage.start(events);
+    stage.shutdown();
+    stage.shutdown();
+
+    SUCCEED();
 }
 
 } // namespace
