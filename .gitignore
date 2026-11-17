@@ -1,0 +1,19 @@
+# Build output
+build/
+build-*/
+out/
+cmake-build-*/
+
+# Visual Studio / VS Code user state
+.vs/
+.vscode/
+*.user
+*.suo
+CMakeUserPresets.json
+
+# Compiled artefacts
+*.obj
+*.o
+*.exe
+*.pdb
+*.ilk
