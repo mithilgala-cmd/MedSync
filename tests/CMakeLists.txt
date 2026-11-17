@@ -13,6 +13,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 add_executable(medsync_tests
+    test_bounded_queue.cpp
     test_config.cpp
     test_device_controller.cpp
     test_device_state.cpp
