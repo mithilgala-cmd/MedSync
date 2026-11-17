@@ -14,6 +14,7 @@
 #include "medsync/DeviceState.hpp"
 #include "medsync/PositioningController.hpp"
 #include "medsync/SampleHandler.hpp"
+#include "medsync/SensorMonitor.hpp"
 #include "medsync/ScanningModule.hpp"
 #include "medsync/Types.hpp"
 
@@ -29,6 +30,7 @@ class Logger;
 //     and submits the next job
 //   * positioning worker: performs queued moves
 //   * scanning worker: performs queued scans
+//   * sensor worker: samples synthetic sensors on a fixed period
 //
 // All device state and the active sample are guarded by mutex_. Worker threads
 // only publish events; they never touch controller state.
@@ -40,7 +42,8 @@ public:
     DeviceController(const DeviceController&) = delete;
     DeviceController& operator=(const DeviceController&) = delete;
 
-    // Validates configuration and starts the three background threads.
+    // Validates configuration and starts the supervisor, worker, and sensor
+    // threads.
     bool initialise(std::string& error);
 
     // Idle -> Homing -> Ready. Synchronous: homing is an operator action and
@@ -72,6 +75,7 @@ public:
     std::optional<Sample> activeSample() const;
     Position position() const;
     bool isHomed() const;
+    SensorReading sensorReading() const;
 
     std::string statusText() const;
 
@@ -93,6 +97,7 @@ private:
     DeviceState state_{DeviceState::Idle};
     PositioningController positioning_;
     ScanningModule scanner_;
+    SensorMonitor sensors_;
     SampleHandler samples_;
     BoundedQueue<DeviceEvent> events_{16};
     std::thread supervisor_;

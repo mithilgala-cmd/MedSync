@@ -5,6 +5,7 @@
 #include <chrono>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #include "medsync/Logger.hpp"
 
@@ -12,6 +13,13 @@ namespace medsync {
 namespace {
 
 using namespace std::chrono_literals;
+
+Config fastConfig() {
+    Config config;
+    config.stepDelay = 0ms;
+    config.scanDuration = 0ms;
+    return config;
+}
 
 class DeviceControllerTest : public ::testing::Test {
 protected:
@@ -34,7 +42,7 @@ protected:
             << "cycle did not complete";
     }
 
-    Config config_;
+    Config config_{fastConfig()};
     std::ostringstream sink_;
     Logger logger_{sink_};
     DeviceController controller_{config_, logger_};
@@ -242,6 +250,51 @@ TEST_F(DeviceControllerTest, StatusTextIncludesStateAndSample) {
     EXPECT_NE(status.find("state=Ready"), std::string::npos);
     EXPECT_NE(status.find("S-777"), std::string::npos);
     EXPECT_NE(status.find("Received"), std::string::npos);
+}
+
+TEST(DeviceControllerScanTest, SampleIsMarkedScanningDuringTheScan) {
+    Config config;
+    config.stepDelay = 0ms;
+    config.scanDuration = 300ms;
+    std::ostringstream sink;
+    Logger logger(sink);
+    DeviceController controller(config, logger);
+
+    std::string error;
+    ASSERT_TRUE(controller.initialise(error)) << error;
+    ASSERT_TRUE(controller.home(error)) << error;
+    ASSERT_TRUE(controller.loadSample("S-500", Position{10, 10}, error))
+        << error;
+    ASSERT_TRUE(controller.runCycle(error)) << error;
+
+    ASSERT_TRUE(controller.waitForState(DeviceState::Scanning, 2000ms));
+    const std::optional<Sample> sample = controller.activeSample();
+    ASSERT_TRUE(sample.has_value());
+    EXPECT_EQ(sample->status, SampleStatus::Scanning);
+
+    ASSERT_TRUE(controller.waitForCycleCompletion(2000ms));
+    EXPECT_EQ(controller.state(), DeviceState::Ready);
+    ASSERT_TRUE(controller.shutdown(error)) << error;
+}
+
+TEST_F(DeviceControllerTest, SensorReadingsAreAvailableThroughStatus) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+    while (controller_.sensorReading().sequence == 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    const SensorReading reading = controller_.sensorReading();
+    ASSERT_GT(reading.sequence, 0u);
+    EXPECT_GE(reading.temperatureC, 33.0);
+    EXPECT_LE(reading.temperatureC, 38.0);
+    EXPECT_GE(reading.forceN, 0.0);
+    EXPECT_LE(reading.forceN, 12.0);
+
+    const std::string status = controller_.statusText();
+    EXPECT_NE(status.find("temp="), std::string::npos);
+    EXPECT_NE(status.find("force="), std::string::npos);
 }
 
 TEST_F(DeviceControllerTest, WaitForStateTimesOutWhenStateNeverArrives) {

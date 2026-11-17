@@ -15,14 +15,15 @@ workflow. This document describes the code as it exists today.
 |---|---|---|
 | `DeviceController` | Lifecycle, command entry points, sole writer of `DeviceState`, safety actions, event-driven supervisor loop | Caller thread and one supervisor thread |
 | `DeviceState` | State enum and the transition table as pure functions | N/A |
-| `PositioningController` | Two-axis stage model, homing, stepping to a target, move job queue, worker thread | One worker |
-| `ScanningModule` | Deterministic synthetic scan record, scan job queue, worker thread | One worker |
+| `PositioningController` | Two-axis stage model, homing, timed stepping to a target, move job queue, worker thread | One worker |
+| `ScanningModule` | Deterministic synthetic scan record, simulated scan duration, scan job queue, worker thread | One worker |
+| `SensorMonitor` | Periodic synthetic temperature/force readings and a thread-safe snapshot | One worker |
 | `SampleHandler` | One active sample: id/target validation and status transitions | Used under the controller mutex |
 | `DeviceEvent` | Worker result types plus the cycle ID used for correlation | N/A |
 | `BoundedQueue<T>` | Fixed-capacity FIFO; non-blocking producers, blocking consumers | Internal mutex per queue |
 | `Logger` | Thread-safe, ordered event log with monotonic timestamps | Any thread |
-| `Config` | Bounds, step size, home position, id limits; validated once at start-up | N/A |
-| `Types` | `Position`, `Sample`, `SampleStatus`, `ScanResult` | N/A |
+| `Config` | Bounds, step size, home position, id limits, timing periods; validated once at start-up | N/A |
+| `Types` | `Position`, `Sample`, `SampleStatus`, `ScanResult`, `SensorReading` | N/A |
 
 `main.cpp` is the only component that parses console input. The core library
 never reads `stdin`, which keeps it testable without a terminal.
@@ -43,6 +44,8 @@ DeviceController
    |     `-- scanning worker thread
    |-- BoundedQueue<DeviceEvent> (capacity 16)
    |-- supervisor thread
+   |-- SensorMonitor
+   |     `-- sensor worker thread
    |-- SampleHandler
    `-- Logger& (shared, injected)
 ```
@@ -58,13 +61,14 @@ DeviceController
 |---|---|---|
 | Console | Parse commands, call the controller API, print results | Blocking `stdin`, or a controller state wait for `wait`/tests |
 | Supervisor | Pop `DeviceEvent`, validate it, change device state, submit the next job | `DeviceEvent` queue |
-| Positioning worker | Pop `MoveJob`, step x then y, publish a result | Move job queue |
-| Scanning worker | Pop `ScanJob`, produce a synthetic result, publish it | Scan job queue |
+| Positioning worker | Pop `MoveJob`, step x then y, publish a result | Move job queue, then `stepDelay` between steps |
+| Scanning worker | Pop `ScanJob`, wait `scanDuration`, produce a synthetic result, publish it | Scan job queue, then `scanDuration` |
+| Sensor worker | Generate a reading every `sensorPeriod`, update the snapshot | Timed `wait_for` with a stop predicate |
 
 The sample pipeline is intentionally not a producer/consumer chain of many
 samples. One sample is active at a time; the queues hold jobs and events, not a
 backlog of patient samples. Replacing the single slot with a queue is a
-separate design change, not something Milestone 2 silently added.
+separate design change, not part of the current threading model.
 
 ### Event flow for one cycle
 
@@ -101,6 +105,42 @@ The supervisor exists to keep one rule true: `DeviceController` is the only
 writer of `DeviceState`. Workers never lock the controller, never read the
 active sample, and never decide what a result means. They publish an immutable
 event and continue.
+
+### Timed operations and cancellation
+
+`Config` controls the simulated timing:
+
+| Setting | Default | Effect |
+|---|---|---|
+| `stepDelay` | 5 ms | Pause after each coordinate step |
+| `scanDuration` | 50 ms | Simulated scan time |
+| `sensorPeriod` | 100 ms | Sensor sampling interval |
+
+Both workers use a `std::condition_variable::wait_for` with an abort predicate
+instead of a plain sleep. `cancelPending()` sets the abort flag under the delay
+mutex and notifies, so an emergency stop interrupts the delay instead of waiting
+for it to expire. Taking the same mutex in the setter and the predicate closes
+the lost-wake window between the predicate check and the sleep.
+
+The delay is per step, not per move: a 200 mm move in 10 mm steps pays 20 step
+delays per axis. `home()` remains a synchronous operator action with no
+simulated duration.
+
+### Sensor sampling
+
+`SensorMonitor` is a **pull source**, not an event publisher. A reading every
+100 ms would fill the 16-slot worker event queue with data that no state
+transition consumes. The monitor instead keeps a `SensorReading` snapshot under
+its own mutex:
+
+- `latest()` returns the snapshot for `status` and future threshold logic.
+- `waitForReadingAfter(sequence, timeout)` blocks until a newer reading exists.
+- `sampleOnce()` generates one reading immediately and is used by tests.
+
+Readings come from a fixed-seed LCG and are bounded to 33–38 °C and 0–12 N.
+They are deterministic for a given sequence, not measurements. Thresholds,
+warnings, and fault reactions belong to Milestone 4; M3 only makes the data
+available and visible.
 
 ## State machine
 

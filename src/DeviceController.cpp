@@ -1,6 +1,7 @@
 #include "medsync/DeviceController.hpp"
 
 #include <exception>
+#include <iomanip>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -13,7 +14,8 @@ DeviceController::DeviceController(Config config, Logger& logger)
     : config_(std::move(config)),
       logger_(logger),
       positioning_(config_, logger_),
-      scanner_(logger_),
+      scanner_(config_, logger_),
+      sensors_(config_, logger_),
       samples_(config_, logger_) {}
 
 DeviceController::~DeviceController() {
@@ -44,13 +46,15 @@ bool DeviceController::initialise(std::string& error) {
     try {
         positioning_.start(events_);
         scanner_.start(events_);
+        sensors_.start();
         supervisor_ = std::thread(&DeviceController::supervisorLoop, this);
     } catch (const std::exception& exception) {
         startFailed_ = true;
-        error = std::string("failed to start worker threads: ") +
+        error = std::string("failed to start background threads: ") +
                 exception.what();
         positioning_.shutdown();
         scanner_.shutdown();
+        sensors_.shutdown();
         events_.close();
         if (supervisor_.joinable()) {
             supervisor_.join();
@@ -60,7 +64,8 @@ bool DeviceController::initialise(std::string& error) {
     }
 
     initialised_ = true;
-    logger_.info("device initialised; supervisor and worker threads started");
+    logger_.info(
+        "device initialised; supervisor, worker, and sensor threads started");
     return true;
 }
 
@@ -262,12 +267,13 @@ bool DeviceController::shutdown(std::string& error) {
 
     positioning_.shutdown();
     scanner_.shutdown();
+    sensors_.shutdown();
     events_.close();
     if (supervisor_.joinable()) {
         supervisor_.join();
     }
 
-    logger_.info("shutdown complete; worker threads joined");
+    logger_.info("shutdown complete; background threads joined");
     return true;
 }
 
@@ -308,8 +314,14 @@ bool DeviceController::isHomed() const {
     return positioning_.isHomed();
 }
 
+SensorReading DeviceController::sensorReading() const {
+    return sensors_.latest();
+}
+
 std::string DeviceController::statusText() const {
     std::lock_guard<std::mutex> lock(mutex_);
+
+    const SensorReading reading = sensors_.latest();
 
     std::ostringstream out;
     out << "state=" << to_string(state_) << " position=("
@@ -322,6 +334,14 @@ std::string DeviceController::statusText() const {
             << to_string(samples_.active()->status) << ")";
     } else {
         out << "none";
+    }
+
+    out << std::fixed << std::setprecision(1);
+    if (reading.sequence == 0) {
+        out << " sensors=no-reading";
+    } else {
+        out << " temp=" << reading.temperatureC << "C force=" << reading.forceN
+            << "N";
     }
     return out.str();
 }
@@ -353,6 +373,7 @@ void DeviceController::handleEvent(const DeviceEvent& event) {
         if (!transitionToLocked(DeviceState::Scanning, error)) {
             return;
         }
+        samples_.markScanning();
 
         if (!samples_.hasActive()) {
             logger_.error("move completed without an active sample");

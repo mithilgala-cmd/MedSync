@@ -10,8 +10,8 @@ multithreading, debugging, and testing.
 
 ## Current status
 
-**Milestones 1–2 complete: single-device simulation with a supervisor and
-worker threads.**
+**Milestones 1–3 complete: single-device simulation with a supervisor, worker
+threads, timed operations, and periodic sensor sampling.**
 
 What works today:
 
@@ -25,6 +25,10 @@ What works today:
   supervisor thread drives the state machine.
 - One positioning worker and one scanning worker, each with a bounded job
   queue; producers never block.
+- Simulated step and scan durations. Both waits are cancellable, so an
+  emergency stop does not have to wait for the current delay to expire.
+- A sensor worker samples synthetic temperature and force readings on a fixed
+  period; `status` shows the latest snapshot.
 - Cycle IDs correlate worker results, and cancellation generations stop stale
   jobs from starting after a reset.
 - Emergency stop with a two-step recovery: `release`, then `reset`, then re-home.
@@ -32,11 +36,12 @@ What works today:
 - Idempotent shutdown that stops and joins every started thread.
 - Console REPL with `wait` and `status` commands.
 - Unit and concurrency tests, including repeated cycles, e-stop recovery,
-  shutdown while busy, and status queries racing with a running cycle.
+  shutdown while busy, status queries racing with a running cycle, timed
+  waits, and sensor snapshot tests.
 
-Not implemented yet: sensor simulation, simulated motion/scan duration, a fault
-taxonomy with automatic detection and recovery, fault injection, and a watchdog
-for dropped worker events. See the roadmap below.
+Not implemented yet: sensor thresholds and a fault taxonomy with automatic
+detection and recovery, fault injection, and a watchdog for dropped worker
+events. See the roadmap below.
 
 ## Requirements
 
@@ -72,47 +77,51 @@ ctest --test-dir build -C Debug --output-on-failure
 
 ```
 medsync> home
-[+139 ms] [INFO] state: Idle -> Homing
-[+139 ms] [INFO] stage homed at (0, 0)
-[+139 ms] [INFO] state: Homing -> Ready
+[+2 ms] [INFO] state: Idle -> Homing
+[+2 ms] [INFO] stage homed at (0, 0)
+[+2 ms] [INFO] state: Homing -> Ready
 
-medsync> load S-001 10 20
-[+139 ms] [INFO] sample 'S-001' loaded; run the cycle to process it
+medsync> load S-001 40 -30
+[+2 ms] [INFO] sample 'S-001' loaded; run the cycle to process it
 
 medsync> run
-[+139 ms] [INFO] state: Ready -> Positioning
-[+139 ms] [INFO] cycle 1 submitted for sample 'S-001'
+[+3 ms] [INFO] state: Ready -> Positioning
+[+3 ms] [INFO] cycle 1 submitted for sample 'S-001'
 cycle started
 
+medsync> status
+state=Positioning position=(10, 0) homed=yes sample=S-001 (Received) temp=36.0C force=1.3N
+
 medsync> wait
-[+139 ms] [DEBUG] move requested to (10, 20)
-[+140 ms] [INFO] stage reached (10, 20)
-[+140 ms] [INFO] state: Positioning -> Scanning
-[+140 ms] [INFO] scan completed for sample 'S-001' (synthetic quality 81)
-[+140 ms] [INFO] sample 'S-001' completed with quality 81
-[+140 ms] [INFO] state: Scanning -> Ready
+[+15 ms] [DEBUG] axis x -> 20
+[+108 ms] [INFO] stage reached (40, -30)
+[+108 ms] [INFO] state: Positioning -> Scanning
+[+170 ms] [INFO] scan completed for sample 'S-001' (synthetic quality 81)
+[+171 ms] [INFO] sample 'S-001' completed with quality 81
+[+171 ms] [INFO] state: Scanning -> Ready
 cycle complete
 
 medsync> status
-state=Ready position=(10, 20) homed=yes sample=none
+state=Ready position=(40, -30) homed=yes sample=none temp=35.1C force=9.8N
 
 medsync> estop
-[+140 ms] [WARN] EMERGENCY STOP: state Ready -> EmergencyStop
+[+171 ms] [WARN] EMERGENCY STOP: state Ready -> EmergencyStop
 
 medsync> reset
 error: emergency stop is still latched; release it first
 
 medsync> release
-[+140 ms] [INFO] emergency stop released; reset required before homing
+[+171 ms] [INFO] emergency stop released; reset required before homing
 
 medsync> reset
-[+140 ms] [INFO] state: EmergencyStop -> Idle
-[+140 ms] [INFO] reset complete; the stage must be homed before use
+[+171 ms] [INFO] state: EmergencyStop -> Idle
+[+171 ms] [INFO] reset complete; the stage must be homed before use
 ```
 
 This is adapted from a real run with Debug logging enabled; repeated prompt and
 debug lines are omitted. Worker logs can appear before the `run` command
-returns or while the console is waiting; that interleaving is expected.
+returns or while the console is waiting. Sensor values depend on how many
+readings have been generated, so they vary with timing.
 
 ## Architecture
 
@@ -125,6 +134,7 @@ DeviceController ── owns ──> DeviceState (mutex + condition variable)
    |-- Scan job queue ──────> ScanningModule worker
    |-- DeviceEvent queue <── both workers
    |-- supervisor thread (consumes events, drives transitions)
+   |-- SensorMonitor worker (periodic readings, pull snapshot)
    |-- SampleHandler
    `-- Logger& (shared, injected)
 ```
@@ -146,8 +156,8 @@ Full module map, state diagram, transition table, lock ordering, and event flow:
 |---|---|---|
 | 1 | State machine, OOP design, validation, console simulation | Complete (single-threaded) |
 | 2 | Worker threads, bounded job/event queues, mutex/condition-variable synchronisation | Complete |
-| 3 | Sensor readings, timed positioning and scanning, module communication | Next |
-| 4 | Fault detection, recovery, emergency-stop propagation, event logging | Planned |
+| 3 | Sensor readings, timed positioning and scanning, module communication | Complete |
+| 4 | Fault detection, recovery, emergency-stop propagation, event logging | Next |
 | 5 | Unit, integration, concurrency, and fault-injection tests | In progress (unit and concurrency tests) |
 | 6 | Final architecture diagrams, build/test docs, design notes | In progress |
 

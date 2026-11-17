@@ -32,6 +32,18 @@ bool Config::validate(std::string& error) const {
         error = "maxSampleIdLength must not exceed 128";
         return false;
     }
+    if (stepDelay.count() < 0) {
+        error = "stepDelay must not be negative";
+        return false;
+    }
+    if (scanDuration.count() < 0) {
+        error = "scanDuration must not be negative";
+        return false;
+    }
+    if (sensorPeriod.count() <= 0) {
+        error = "sensorPeriod must be positive";
+        return false;
+    }
     return true;
 }
 

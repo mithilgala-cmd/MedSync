@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -38,6 +39,14 @@ struct ScanResult {
     bool successful{false};
     int qualityScore{0};
     std::string note;
+};
+
+// Synthetic sensor sample. sequence increases with every generated reading and
+// lets readers detect fresh data. Neither value models real hardware.
+struct SensorReading {
+    std::uint64_t sequence{0};
+    double temperatureC{0.0};
+    double forceN{0.0};
 };
 
 } // namespace medsync

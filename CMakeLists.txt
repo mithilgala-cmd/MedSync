@@ -23,6 +23,7 @@ add_library(medsync_core
     src/PositioningController.cpp
     src/SampleHandler.cpp
     src/ScanningModule.cpp
+    src/SensorMonitor.cpp
     src/Types.cpp
 )
 target_include_directories(medsync_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

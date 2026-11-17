@@ -22,6 +22,7 @@ add_executable(medsync_tests
     test_positioning.cpp
     test_sample_handler.cpp
     test_scanning.cpp
+    test_sensor_monitor.cpp
 )
 target_link_libraries(medsync_tests PRIVATE medsync_core GTest::gtest_main medsync_warnings)
 

@@ -16,8 +16,15 @@ namespace {
 
 using namespace std::chrono_literals;
 
-TEST(DeviceConcurrencyTest, FiftySequentialCyclesComplete) {
+Config fastConfig() {
     Config config;
+    config.stepDelay = 0ms;
+    config.scanDuration = 0ms;
+    return config;
+}
+
+TEST(DeviceConcurrencyTest, FiftySequentialCyclesComplete) {
+    Config config = fastConfig();
     std::ostringstream sink;
     Logger logger(sink);
     DeviceController controller(config, logger);
@@ -43,7 +50,9 @@ TEST(DeviceConcurrencyTest, FiftySequentialCyclesComplete) {
 }
 
 TEST(DeviceConcurrencyTest, EmergencyStopDuringProcessingCanRecover) {
-    Config config;
+    Config config = fastConfig();
+    config.stepDelay = 2ms;
+    config.scanDuration = 10ms;
     std::ostringstream sink;
     Logger logger(sink);
     DeviceController controller(config, logger);
@@ -75,7 +84,9 @@ TEST(DeviceConcurrencyTest, EmergencyStopDuringProcessingCanRecover) {
 }
 
 TEST(DeviceConcurrencyTest, ShutdownDuringProcessingJoinsCleanly) {
-    Config config;
+    Config config = fastConfig();
+    config.stepDelay = 5ms;
+    config.scanDuration = 20ms;
     std::ostringstream sink;
     Logger logger(sink);
     DeviceController controller(config, logger);
@@ -93,7 +104,7 @@ TEST(DeviceConcurrencyTest, ShutdownDuringProcessingJoinsCleanly) {
 }
 
 TEST(DeviceConcurrencyTest, StatusQueriesRaceWithCycleExecution) {
-    Config config;
+    Config config = fastConfig();
     std::ostringstream sink;
     Logger logger(sink);
     DeviceController controller(config, logger);
@@ -134,7 +145,8 @@ TEST(DeviceConcurrencyTest, StatusQueriesRaceWithCycleExecution) {
 }
 
 TEST(DeviceConcurrencyTest, DestructorShutsDownRunningThreads) {
-    Config config;
+    Config config = fastConfig();
+    config.stepDelay = 5ms;
     std::ostringstream sink;
     Logger logger(sink);
 

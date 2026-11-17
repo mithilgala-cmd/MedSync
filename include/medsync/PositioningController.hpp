@@ -67,6 +67,7 @@ private:
     void run();
     bool moveAxis(int target, char axisName, std::uint64_t generation,
                   std::string& error);
+    void waitForStepDelay();
     void publish(DeviceEventType type, std::uint64_t cycleId,
                  const std::string& message);
     void setBusy(bool busy);
@@ -78,6 +79,11 @@ private:
     std::thread worker_;
     std::atomic<bool> abort_{false};
     std::atomic<std::uint64_t> generation_{0};
+
+    // Guards the wait only. cancelPending() takes this mutex before setting
+    // abort_, which prevents a lost wake between the predicate check and sleep.
+    std::mutex delayMutex_;
+    std::condition_variable delayCv_;
 
     mutable std::mutex positionMutex_;
     Position position_{};
