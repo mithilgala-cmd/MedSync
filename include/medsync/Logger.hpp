@@ -18,9 +18,9 @@ enum class LogLevel {
 std::string_view to_string(LogLevel level) noexcept;
 
 // Thread-safe event logger. All messages are written through a single mutex,
-// which keeps lines intact when worker threads start logging in Milestone 2.
-// The clock is steady_clock, so timestamps are monotonic and unaffected by
-// system time changes.
+// which keeps lines intact when worker threads log concurrently. The clock is
+// steady_clock, so timestamps are monotonic and unaffected by system time
+// changes.
 class Logger {
 public:
     explicit Logger(std::ostream& out);

@@ -40,10 +40,13 @@ If `cmake` is not on PATH, use:
 ## Architecture rules
 
 - `DeviceController` is the only writer of `DeviceState`.
-- Worker threads (from Milestone 2) report events; they never change device
-  state directly.
-- All multi-field state is guarded by a mutex. The emergency-stop flag is the
-  only atomic, because it is a single latching bit.
+- Worker threads report events; they never change device state directly.
+- Every worker result carries a cycle ID. The supervisor must ignore events
+  that do not match the active state and cycle.
+- All multi-field state is guarded by a mutex. The emergency-stop latch is
+  guarded by the controller mutex. Worker abort flags and cancellation
+  generations are atomics because workers poll them without taking a component
+  lock.
 - Never call back into `DeviceController` while holding a component lock.
 - Every condition-variable wait must use the predicate overload.
 - `shutdown()` must be idempotent and must join every started thread.

@@ -10,9 +10,10 @@ namespace medsync {
 
 class Logger;
 
-// Owns the lifecycle of the sample currently being processed. Milestone 1 is
-// single-threaded and holds at most one active sample; Milestone 2 replaces the
-// single slot with a bounded, thread-safe queue.
+// Owns the lifecycle of the single sample currently being processed. This
+// class has no internal lock: DeviceController serializes every call under its
+// state mutex. Replacing the single slot with a queue is a separate design
+// change, not part of the current threading model.
 class SampleHandler {
 public:
     SampleHandler(const Config& config, Logger& logger);

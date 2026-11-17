@@ -25,24 +25,29 @@ does not prove the switch is exhaustive; the tests cover the table.
 events and update the device.
 
 **Decision:** Components report results and faults; only `DeviceController`
-changes `DeviceState`.
+changes `DeviceState`. Workers publish events to a bounded queue, and a
+supervisor thread inside the controller consumes them.
 
 **Consequence:** One writer, one mutex, one ordering point. The trade-off is
-that safety reactions wait for the controller's next observation. Emergency
-stop is therefore handled by the latching atomic flag that workers check
-directly, not by a state transition.
+that normal state changes wait for the supervisor. Emergency stop does not wait:
+the controller forces `EmergencyStop` immediately and additionally sets a
+per-worker atomic abort flag that the workers poll without taking the controller
+mutex. The latch itself is guarded by the controller mutex because it is only
+read and written through controller entry points.
 
 ## ADR-003: No task scheduler or thread pool
 
-**Context:** The roadmap mentions a `TaskScheduler`. The workload is three fixed
-activities: positioning, scanning, and sensing.
+**Context:** The roadmap originally mentioned a `TaskScheduler`. The workload is
+a fixed set of activities: positioning, scanning, and later sensing.
 
-**Decision:** Use three explicit, long-lived worker threads with predicate-based
-waiting. No generic pool, no work stealing, no scheduler abstraction.
+**Decision:** Use explicit, long-lived worker threads with predicate-based
+waiting. Milestone 2 has two workers (positioning and scanning) plus one
+supervisor thread. The sensor worker arrives with Milestone 3. No generic pool,
+no work stealing, no scheduler abstraction.
 
 **Alternatives:** a thread pool with a job queue. It would add lifetime,
-shutdown, and fairness problems while the maximum useful parallelism stays at
-three.
+shutdown, and fairness problems while the maximum useful parallelism stays
+small and fixed.
 
 **Revisit when:** the number of independent jobs becomes dynamic, or profiling
 shows the fixed workers are the bottleneck.
@@ -51,15 +56,20 @@ shows the fixed workers are the bottleneck.
 
 **Context:** Samples arrive from the console; processing is slower.
 
-**Decision (Milestone 2):** a bounded queue protected by one mutex and two
-condition variables. When full, the submission is rejected with an explicit
-error.
+**Decision:** `BoundedQueue<T>` uses one mutex and one condition variable.
+Producers call `tryPush()`, which never blocks; when the queue is full or closed
+the submission is rejected with an explicit error. Consumers call `pop()`, which
+blocks until an item arrives or the queue is closed and drained.
 
-**Alternatives:** unbounded queue (memory growth, latency), blocking the
-producer (freezes the console UI).
+**Alternatives:** an unbounded queue (memory growth, latency), a blocking
+producer (freezes the console), a second condition variable for "not full"
+(unnecessary when producers never wait).
 
 **Cost:** callers must handle rejection. This is deliberate: a medical workflow
-should not silently discard or endlessly buffer work.
+should not silently discard or endlessly buffer work. One exception is the
+worker-to-supervisor event queue, where a full queue currently drops the event
+and logs a warning; the resulting liveness gap is documented in
+`limitations.md`.
 
 ## ADR-005: Error codes for operator actions, exceptions for bugs
 
@@ -123,3 +133,75 @@ planar positioning.
 and the bounds check.
 
 **Cost:** less realistic mechanical model; less code to explain.
+
+## ADR-010: A supervisor thread instead of workers changing state
+
+**Context:** Once positioning and scanning run on their own threads, either the
+workers could update `DeviceState` themselves, or some other component could
+own the transitions.
+
+**Decision:** Workers publish `DeviceEvent` values. A supervisor thread inside
+`DeviceController` is the only consumer. It checks the expected state and cycle
+ID, then performs the transition and submits the next job.
+
+**Alternatives:** let each worker lock the controller and update state. That
+spreads transition logic across modules and makes the lock order harder to
+reason about. A separate state-machine object would add another owner without
+removing the need for one serialization point.
+
+**Cost:** every cycle pays one extra event hop and a context switch. In exchange,
+there is exactly one place where state changes, and workers only depend on
+queues and immutable data.
+
+## ADR-011: Cycle IDs plus cancellation generations
+
+**Context:** A worker can finish after an emergency stop, or a job can be popped
+just before a stop and start just after a reset. A late result must not complete
+a later cycle.
+
+**Decision:** Every job carries a monotonic cycle ID; every result echoes it.
+The supervisor ignores results whose ID does not match `activeCycleId_`. Each
+worker also keeps a cancellation generation. `cancelPending()` increments it and
+clears the queue; a job whose captured generation is stale is discarded instead
+of executed.
+
+**Alternatives:** rely only on the state check. The state can return to
+`Positioning` for a new cycle before a stale event arrives, so state alone is
+not enough. Add a timestamp to every result: clock ordering adds complexity for
+no benefit here.
+
+**Cost:** two integers per job and event, plus the rule that stale results are
+ignored rather than reported to the operator.
+
+## ADR-012: Asynchronous run with explicit waits
+
+**Context:** If `runCycle()` blocked until scanning finished, the console could
+not accept `estop`, `status`, or `quit` during a cycle.
+
+**Decision:** `runCycle()` submits the move and returns. The console offers
+`wait`, and tests use `waitForCycleCompletion(timeout)` or
+`waitForState(state, timeout)`. Both use the predicate overload of
+`condition_variable::wait_for`.
+
+**Alternatives:** a blocking `runCycle()` with a separate command thread
+(splits input handling from output and complicates the REPL), or polling in the
+console (wastes time and still needs synchronization).
+
+**Cost:** callers must decide when to wait. A cycle that faults returns `false`
+from `waitForCycleCompletion()` rather than throwing.
+
+## ADR-013: One active sample, job queues only
+
+**Context:** The original roadmap mentioned a sample queue. The workflow,
+however, has one table position and one active scan.
+
+**Decision:** `SampleHandler` keeps a single active sample. The bounded queues
+hold move jobs, scan jobs, and worker events, not a backlog of samples. A second
+`load` while a sample is active is rejected.
+
+**Alternatives:** a bounded pipeline of samples with one slot per stage. That
+would require admission control, per-sample state isolation, and a much larger
+test surface; it is not needed to demonstrate the concurrency model.
+
+**Cost:** no throughput pipelining. The project stays a single-sample
+simulation until a future milestone changes the requirement.

@@ -10,7 +10,8 @@ multithreading, debugging, and testing.
 
 ## Current status
 
-**Milestone 1 — single-threaded device simulation: complete.**
+**Milestones 1–2 complete: single-device simulation with a supervisor and
+worker threads.**
 
 What works today:
 
@@ -20,14 +21,22 @@ What works today:
 - Sample id, target, and configuration validation.
 - Two-axis stage model with homing and deterministic stepping.
 - Synthetic scan record produced from the sample id.
+- Asynchronous `runCycle()`: the console submits a cycle and returns while a
+  supervisor thread drives the state machine.
+- One positioning worker and one scanning worker, each with a bounded job
+  queue; producers never block.
+- Cycle IDs correlate worker results, and cancellation generations stop stale
+  jobs from starting after a reset.
 - Emergency stop with a two-step recovery: `release`, then `reset`, then re-home.
 - Thread-safe logger with monotonic elapsed timestamps.
-- Console REPL.
-- Unit tests for the state table, controller, validation, and components.
+- Idempotent shutdown that stops and joins every started thread.
+- Console REPL with `wait` and `status` commands.
+- Unit and concurrency tests, including repeated cycles, e-stop recovery,
+  shutdown while busy, and status queries racing with a running cycle.
 
-Not implemented yet: worker threads, mutexes, condition variables, the sample
-queue, sensor simulation, fault taxonomy, fault injection, and concurrency
-tests. See the roadmap below.
+Not implemented yet: sensor simulation, simulated motion/scan duration, a fault
+taxonomy with automatic detection and recovery, fault injection, and a watchdog
+for dropped worker events. See the roadmap below.
 
 ## Requirements
 
@@ -63,69 +72,83 @@ ctest --test-dir build -C Debug --output-on-failure
 
 ```
 medsync> home
-[+2 ms] [INFO] state: Idle -> Homing
-[+2 ms] [INFO] stage homed at (0, 0)
-[+2 ms] [INFO] state: Homing -> Ready
+[+139 ms] [INFO] state: Idle -> Homing
+[+139 ms] [INFO] stage homed at (0, 0)
+[+139 ms] [INFO] state: Homing -> Ready
 
 medsync> load S-001 10 20
-[+3 ms] [INFO] sample 'S-001' accepted for target (10, 20)
+[+139 ms] [INFO] sample 'S-001' loaded; run the cycle to process it
 
 medsync> run
-[+3 ms] [INFO] state: Ready -> Positioning
-[+3 ms] [INFO] stage reached (10, 20)
-[+3 ms] [INFO] state: Positioning -> Scanning
-[+3 ms] [INFO] scan completed for sample 'S-001' (synthetic quality 81)
-[+3 ms] [INFO] sample 'S-001' completed with quality 81
-[+3 ms] [INFO] state: Scanning -> Ready
+[+139 ms] [INFO] state: Ready -> Positioning
+[+139 ms] [INFO] cycle 1 submitted for sample 'S-001'
+cycle started
+
+medsync> wait
+[+139 ms] [DEBUG] move requested to (10, 20)
+[+140 ms] [INFO] stage reached (10, 20)
+[+140 ms] [INFO] state: Positioning -> Scanning
+[+140 ms] [INFO] scan completed for sample 'S-001' (synthetic quality 81)
+[+140 ms] [INFO] sample 'S-001' completed with quality 81
+[+140 ms] [INFO] state: Scanning -> Ready
+cycle complete
+
+medsync> status
+state=Ready position=(10, 20) homed=yes sample=none
 
 medsync> estop
-[+4 ms] [WARN] EMERGENCY STOP: state Ready -> EmergencyStop
+[+140 ms] [WARN] EMERGENCY STOP: state Ready -> EmergencyStop
 
 medsync> reset
 error: emergency stop is still latched; release it first
 
 medsync> release
-[+5 ms] [INFO] emergency stop released; reset required before homing
+[+140 ms] [INFO] emergency stop released; reset required before homing
 
 medsync> reset
-[+5 ms] [INFO] state: EmergencyStop -> Idle
-[+5 ms] [INFO] reset complete; the stage must be homed before use
+[+140 ms] [INFO] state: EmergencyStop -> Idle
+[+140 ms] [INFO] reset complete; the stage must be homed before use
 ```
 
-In the actual console the timestamps are millisecond values; they are shortened
-here for readability.
+This is adapted from a real run with Debug logging enabled; repeated prompt and
+debug lines are omitted. Worker logs can appear before the `run` command
+returns or while the console is waiting; that interleaving is expected.
 
 ## Architecture
 
 ```
-main.cpp (console REPL)
+main.cpp (console thread)
      |
      v
-DeviceController ── owns ──> DeviceState
-   |-- PositioningController
-   |-- ScanningModule
+DeviceController ── owns ──> DeviceState (mutex + condition variable)
+   |-- Position job queue ──> PositioningController worker
+   |-- Scan job queue ──────> ScanningModule worker
+   |-- DeviceEvent queue <── both workers
+   |-- supervisor thread (consumes events, drives transitions)
    |-- SampleHandler
    `-- Logger& (shared, injected)
 ```
 
 - The controller is the only writer of device state.
-- Components report results; they never change device state.
+- Workers execute jobs and publish results; they never change device state.
+- The supervisor correlates each event with the active cycle ID and ignores
+  stale results.
 - Console parsing lives only in `main.cpp`, so the core library is testable
   without stdin.
 - No singletons, factories, or generic event bus.
 
-Full module map, state diagram, transition table, and the planned threading
-model: [`docs/architecture.md`](docs/architecture.md).
+Full module map, state diagram, transition table, lock ordering, and event flow:
+[`docs/architecture.md`](docs/architecture.md).
 
 ## Roadmap
 
 | Milestone | Scope | Status |
 |---|---|---|
 | 1 | State machine, OOP design, validation, console simulation | Complete (single-threaded) |
-| 2 | Worker threads, sample queue, mutex/condition-variable synchronisation | Planned |
-| 3 | Sensor readings, timed positioning and scanning, module communication | Planned |
+| 2 | Worker threads, bounded job/event queues, mutex/condition-variable synchronisation | Complete |
+| 3 | Sensor readings, timed positioning and scanning, module communication | Next |
 | 4 | Fault detection, recovery, emergency-stop propagation, event logging | Planned |
-| 5 | Unit, integration, concurrency, and fault-injection tests | In progress (unit tests only) |
+| 5 | Unit, integration, concurrency, and fault-injection tests | In progress (unit and concurrency tests) |
 | 6 | Final architecture diagrams, build/test docs, design notes | In progress |
 
 ## Design notes
