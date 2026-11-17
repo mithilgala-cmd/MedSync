@@ -31,6 +31,7 @@ target_link_libraries(medsync_core PRIVATE medsync_warnings)
 
 add_executable(medsync src/main.cpp)
 target_link_libraries(medsync PRIVATE medsync_core medsync_warnings)
+target_compile_definitions(medsync PRIVATE MEDSYNC_VERSION="${PROJECT_VERSION}")
 
 option(MEDSYNC_BUILD_TESTS "Build MedSync unit tests" ON)
 if(MEDSYNC_BUILD_TESTS)

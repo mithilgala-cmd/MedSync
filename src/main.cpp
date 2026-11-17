@@ -8,7 +8,11 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.1.0";
+#ifndef MEDSYNC_VERSION
+#define MEDSYNC_VERSION "0.0.0"
+#endif
+
+constexpr const char* kVersion = MEDSYNC_VERSION;
 
 void printBanner() {
     std::cout << "\nMedSync v" << kVersion << '\n'
@@ -62,6 +66,8 @@ int main() {
         return 1;
     }
 
+    printBanner();
+
     medsync::Logger logger(std::cout);
     medsync::DeviceController controller(config, logger);
     if (!controller.initialise(error)) {
@@ -69,7 +75,6 @@ int main() {
         return 1;
     }
 
-    printBanner();
     printHelp();
 
     bool running = true;
