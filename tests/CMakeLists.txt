@@ -13,7 +13,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 add_executable(medsync_tests
+    test_config.cpp
     test_device_state.cpp
+    test_logger.cpp
 )
 target_link_libraries(medsync_tests PRIVATE medsync_core GTest::gtest_main medsync_warnings)
 
